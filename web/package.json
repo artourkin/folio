@@ -1,12 +1,13 @@
 {
   "name": "folio-web",
   "private": true,
-  "version": "0.2.1",
+  "version": "0.2.2",
   "type": "module",
   "scripts": {
     "dev": "vite --host 0.0.0.0",
     "build": "tsc -b && vite build",
     "test:e2e": "playwright test",
+    "test:webkit": "playwright test --config playwright.webkit.config.ts",
     "prebuild": "node scripts/copy-pdf-assets.mjs",
     "predev": "node scripts/copy-pdf-assets.mjs",
     "format": "prettier --write src tests scripts *.ts *.json index.html",
