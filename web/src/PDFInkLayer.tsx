@@ -13,9 +13,17 @@ import {
   type InkTool,
   type PageSize,
 } from "./ink";
+import {
+  isStylusTouch,
+  pointerSamples,
+  touchSample,
+  type InkSample,
+} from "./penInput";
 
 type Gesture = {
-  pointerId: number;
+  pointerId?: number;
+  touchId?: number;
+  lastTime: number;
   pointerType: string;
   tool: InkTool;
   stroke: InkStroke;
@@ -69,6 +77,8 @@ export function PDFInkLayer({
     frame = useRef(0),
     lastPen = useRef(-Infinity);
   const activeCallback = useRef(onActive);
+  const currentStrokes = useRef(strokes);
+  currentStrokes.current = strokes;
   activeCallback.current = onActive;
   const clear = useCallback(() => {
     cancelAnimationFrame(frame.current);
@@ -88,14 +98,21 @@ export function PDFInkLayer({
     window.addEventListener("blur", blur);
     return () => window.removeEventListener("blur", blur);
   }, [clear]);
-  const point = (event: PointerEvent): InkPoint => {
+  const point = (event: InkSample, pen: boolean): InkPoint | null => {
     const bounds = svg.current!.getBoundingClientRect();
+    if (
+      !bounds.width ||
+      !bounds.height ||
+      !Number.isFinite(event.clientX) ||
+      !Number.isFinite(event.clientY)
+    )
+      return null;
     return {
       x: Math.max(0, Math.min(1, (event.clientX - bounds.left) / bounds.width)),
       y: Math.max(0, Math.min(1, (event.clientY - bounds.top) / bounds.height)),
       pressure:
-        event.pointerType === "pen" && event.pressure > 0
-          ? event.pressure
+        pen && Number.isFinite(event.pressure) && event.pressure > 0
+          ? Math.min(1, event.pressure)
           : 0.5,
     };
   };
@@ -122,7 +139,7 @@ export function PDFInkLayer({
     const radius =
       (7 / Math.max(1, svg.current!.getBoundingClientRect().width)) *
       size.width;
-    for (const stroke of strokes) {
+    for (const stroke of currentStrokes.current) {
       if (
         !g.erased.has(stroke.id) &&
         touchedStroke(stroke, from, to, size, radius)
@@ -136,52 +153,45 @@ export function PDFInkLayer({
       }
     }
   };
-  const append = (native: PointerEvent) => {
+  const appendSample = (sample: InkSample) => {
     const g = gesture.current;
-    if (!g || g.pointerId !== native.pointerId) return;
-    if (native.pointerType === "pen") lastPen.current = performance.now();
-    const samples = native.getCoalescedEvents?.();
-    for (const event of samples?.length ? samples : [native]) {
-      const next = point(event);
-      if (g.tool === "eraser") erase(g.previous, next);
-      else if (g.stroke.points.length < 10000) {
-        const prev = g.stroke.points[g.stroke.points.length - 1];
-        if (
-          Math.hypot(
-            (next.x - prev.x) * size.width,
-            (next.y - prev.y) * size.height,
-          ) > 0.1
-        )
-          g.stroke.points.push(next);
-      }
-      g.previous = next;
+    if (!g || sample.timeStamp < g.lastTime) return;
+    const next = point(sample, g.pointerType === "pen");
+    if (!next) return;
+    g.lastTime = sample.timeStamp;
+    if (g.pointerType === "pen") lastPen.current = performance.now();
+    if (g.tool === "eraser") erase(g.previous, next);
+    else if (g.stroke.points.length < 10000) {
+      const prev = g.stroke.points[g.stroke.points.length - 1];
+      if (
+        Math.hypot(
+          (next.x - prev.x) * size.width,
+          (next.y - prev.y) * size.height,
+        ) > 0.1
+      )
+        g.stroke.points.push(next);
     }
+    g.previous = next;
     cancelAnimationFrame(frame.current);
     frame.current = requestAnimationFrame(paint);
   };
-  const down = (e: ReactPointerEvent<SVGSVGElement>) => {
-    if (!enabled) return;
-    if (e.pointerType === "touch" && !drawWithTouch) {
-      // The document owns finger panning and page swipes. Keep ink pointers
-      // separate so navigation cannot turn a pen stroke into a page gesture.
-      return;
-    }
-    if (
-      gesture.current ||
-      (e.pointerType === "touch" && performance.now() - lastPen.current < 650)
-    )
-      return;
-    const hardwareEraser =
-      e.pointerType === "pen" && (e.button === 5 || (e.buttons & 32) !== 0);
-    if (e.button !== 0 && !hardwareEraser) return;
-    e.preventDefault();
-    e.stopPropagation();
+  const begin = (
+    sample: InkSample,
+    pointerType: string,
+    pointerId?: number,
+    touchId?: number,
+    hardwareEraser = false,
+  ) => {
+    if (!enabled || gesture.current) return;
+    const start = point(sample, pointerType === "pen");
+    if (!start) return;
     window.getSelection()?.removeAllRanges();
-    if (e.pointerType === "pen") lastPen.current = performance.now();
-    const start = point(e.nativeEvent);
+    if (pointerType === "pen") lastPen.current = performance.now();
     gesture.current = {
-      pointerId: e.pointerId,
-      pointerType: e.pointerType,
+      pointerId,
+      touchId,
+      lastTime: sample.timeStamp,
+      pointerType,
       tool: hardwareEraser ? "eraser" : tool,
       stroke: {
         id:
@@ -198,10 +208,29 @@ export function PDFInkLayer({
       erased: new Set(),
       previous: start,
     };
-    capture(e);
     onActive(true);
     if (gesture.current.tool === "eraser") erase(start, start);
     else paint();
+  };
+  const down = (e: ReactPointerEvent<SVGSVGElement>) => {
+    if (
+      !enabled ||
+      gesture.current ||
+      (e.pointerType === "touch" &&
+        (!drawWithTouch || performance.now() - lastPen.current < 650))
+    )
+      return;
+    const hardwareEraser =
+      e.pointerType === "pen" && (e.button === 5 || (e.buttons & 32) !== 0);
+    if (e.button !== 0 && !hardwareEraser) return;
+    e.preventDefault();
+    e.stopPropagation();
+    begin(e.nativeEvent, e.pointerType, e.pointerId, undefined, hardwareEraser);
+    if (gesture.current) capture(e);
+  };
+  const append = (native: PointerEvent) => {
+    if (gesture.current?.pointerId !== native.pointerId) return;
+    for (const sample of pointerSamples(native)) appendSample(sample);
   };
   const move = (e: ReactPointerEvent<SVGSVGElement>) => {
     if (e.pointerId === gesture.current?.pointerId) {
@@ -209,13 +238,16 @@ export function PDFInkLayer({
       append(e.nativeEvent);
     }
   };
-  const up = (e: ReactPointerEvent<SVGSVGElement>) => {
-    if (gesture.current?.pointerId !== e.pointerId) return;
-    append(e.nativeEvent);
+  const finish = () => {
     const g = gesture.current;
+    if (!g) return;
+    const strokes = currentStrokes.current;
     clear();
     if (g.tool === "eraser") {
-      if (g.erased.size) onChange(strokes.filter((s) => !g.erased.has(s.id)));
+      if (g.erased.size) {
+        currentStrokes.current = strokes.filter((s) => !g.erased.has(s.id));
+        onChange(currentStrokes.current);
+      }
       return;
     }
     if (
@@ -229,8 +261,56 @@ export function PDFInkLayer({
       );
       return;
     }
-    onChange([...strokes, g.stroke]);
+    currentStrokes.current = [...strokes, g.stroke];
+    onChange(currentStrokes.current);
   };
+  const up = (e: ReactPointerEvent<SVGSVGElement>) => {
+    if (gesture.current?.pointerId !== e.pointerId) return;
+    append(e.nativeEvent);
+    finish();
+  };
+  const touches = useRef<(event: TouchEvent) => void>(() => {});
+  touches.current = (event) => {
+    if (!enabled) return;
+    const touch = Array.from(event.changedTouches).find(
+      (t) => isStylusTouch(t) || t.identifier === gesture.current?.touchId,
+    );
+    if (!touch) return;
+    if (event.cancelable) event.preventDefault();
+    event.stopPropagation();
+    if (event.type === "touchstart") {
+      if (!gesture.current)
+        begin(
+          touchSample(touch, event.timeStamp),
+          "pen",
+          undefined,
+          touch.identifier,
+        );
+      else if (gesture.current.pointerType === "pen")
+        gesture.current.touchId = touch.identifier;
+    } else if (gesture.current?.touchId === touch.identifier) {
+      if (event.type === "touchcancel") clear();
+      else {
+        appendSample(touchSample(touch, event.timeStamp));
+        if (event.type === "touchend") finish();
+      }
+    }
+  };
+  useEffect(() => {
+    const node = svg.current!;
+    const listener = (event: TouchEvent) => touches.current(event);
+    const events = [
+      "touchstart",
+      "touchmove",
+      "touchend",
+      "touchcancel",
+    ] as const;
+    events.forEach((type) =>
+      node.addEventListener(type, listener, { passive: false }),
+    );
+    return () =>
+      events.forEach((type) => node.removeEventListener(type, listener));
+  }, []);
   return (
     <svg
       ref={svg}
@@ -242,10 +322,18 @@ export function PDFInkLayer({
       onPointerMove={move}
       onPointerUp={up}
       onPointerCancel={(e) => {
-        if (e.pointerId === gesture.current?.pointerId) clear();
+        if (
+          e.pointerId === gesture.current?.pointerId &&
+          gesture.current.touchId === undefined
+        )
+          clear();
       }}
       onLostPointerCapture={(e) => {
-        if (e.pointerId === gesture.current?.pointerId) clear();
+        if (
+          e.pointerId === gesture.current?.pointerId &&
+          gesture.current.touchId === undefined
+        )
+          clear();
       }}
     >
       {strokes.map((s) => (

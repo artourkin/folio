@@ -1,4 +1,5 @@
 import { useEffect, useRef, type RefObject } from "react";
+import { isStylusTouch } from "./penInput";
 
 type Options = {
   enabled: boolean;
@@ -189,6 +190,21 @@ export function usePDFSwipe(
       lastPen = performance.now();
     };
     const penEvents = ["pointerdown", "pointermove"] as const;
+    const pencil = (event: TouchEvent) => {
+      if (Array.from(event.changedTouches).some(isStylusTouch)) {
+        lastPen = performance.now();
+        swipe = null;
+      }
+    };
+    const touchEvents = [
+      "touchstart",
+      "touchmove",
+      "touchend",
+      "touchcancel",
+    ] as const;
+    touchEvents.forEach((type) =>
+      node.addEventListener(type, pencil, { capture: true, passive: true }),
+    );
     penEvents.forEach((type) => node.addEventListener(type, pen, true));
     window.addEventListener("pointerup", pen, true);
     window.addEventListener("pointercancel", pen, true);
@@ -198,6 +214,9 @@ export function usePDFSwipe(
     node.addEventListener("touchcancel", cancel);
     window.addEventListener("blur", blur);
     return () => {
+      touchEvents.forEach((type) =>
+        node.removeEventListener(type, pencil, true),
+      );
       penEvents.forEach((type) => node.removeEventListener(type, pen, true));
       window.removeEventListener("pointerup", pen, true);
       window.removeEventListener("pointercancel", pen, true);

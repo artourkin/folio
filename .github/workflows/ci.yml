@@ -59,10 +59,12 @@ jobs:
         working-directory: web
       - run: npm run build
         working-directory: web
-      - run: npx playwright install --with-deps chromium
+      - run: npx playwright install --with-deps chromium webkit
         working-directory: web
       - run: go build -o bin/folio ./cmd/folio
       - run: npm run test:e2e
+        working-directory: web
+      - run: npm run test:webkit
         working-directory: web
   images:
     name: Docker (${{ matrix.arch }})

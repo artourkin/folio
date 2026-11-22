@@ -4,6 +4,7 @@ import { ReaderMenu } from "./ReaderMenu";
 import { ReaderViewport, ReaderViewportNavigation } from "./ReaderViewport";
 import { useReaderFullscreen } from "./useReaderFullscreen";
 import { usePDFSwipe } from "./usePDFSwipe";
+import { useStylusTouchGuard } from "./useStylusTouchGuard";
 import { pdfOutputScale, usePDFDisplayScale } from "./pdfRendering";
 import "./reader.css";
 import { PDFInkLayer } from "./PDFInkLayer";
@@ -111,6 +112,7 @@ export function Reader({
     [pdfSize, setPdfSize] = useState<PageSize>({ width: 612, height: 792 });
   const [popover, setPopover] = useState<"reader" | "ink" | null>(null);
   const [readerRoot, setReaderRoot] = useState<HTMLDivElement | null>(null);
+  useStylusTouchGuard(readerRoot, book.format === "PDF", inkEnabled);
   const fullscreen = useReaderFullscreen(readerRoot);
   const [viewportZoomed, setViewportZoomed] = useState(false);
   const compactScreen = useCompactReader();
